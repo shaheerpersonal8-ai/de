@@ -1,8 +1,30 @@
-import { Keypair, Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
-import { createHash } from 'crypto';
-import { EvaluationResult, Attestation } from '../types';
+import nacl from 'tweetnacl';
+import { Keypair, PublicKey } from '@solana/web3.js';
+import { Attestation, EvaluationResult } from '../types';
 
 const ATTESTATION_EXPIRY_HOURS = 24;
+
+function canonicalizeAttestation(attestation: Omit<Attestation, 'signature'>): string {
+  return JSON.stringify({
+    escrow: attestation.escrow,
+    milestone: attestation.milestone,
+    requirements_hash: attestation.requirements_hash,
+    evidence_hash: attestation.evidence_hash,
+    decision: attestation.decision,
+    issued_at: attestation.issued_at,
+    expires_at: attestation.expires_at,
+    nonce: attestation.nonce,
+  }, Object.keys({
+    escrow: attestation.escrow,
+    milestone: attestation.milestone,
+    requirements_hash: attestation.requirements_hash,
+    evidence_hash: attestation.evidence_hash,
+    decision: attestation.decision,
+    issued_at: attestation.issued_at,
+    expires_at: attestation.expires_at,
+    nonce: attestation.nonce,
+  }).sort());
+}
 
 export function createAttestation(
   evaluationResult: EvaluationResult,
@@ -14,8 +36,7 @@ export function createAttestation(
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + ATTESTATION_EXPIRY_HOURS * 3600;
 
-  // Map decision to on-chain format (1=Pass, 2=Fail, 3=NeedsReview)
-  let decisionCode: 1 | 2 | 3 = 3; // Default to NEEDS_REVIEW
+  let decisionCode: 1 | 2 | 3 = 3;
   if (evaluationResult.decision === 'PASS') decisionCode = 1;
   else if (evaluationResult.decision === 'FAIL') decisionCode = 2;
 
@@ -31,26 +52,32 @@ export function createAttestation(
     nonce,
   };
 
-  // Sign attestation
-  const attestationString = JSON.stringify({
-    escrow: attestation.escrow,
-    milestone: attestation.milestone,
-    requirements_hash: attestation.requirements_hash,
-    evidence_hash: attestation.evidence_hash,
-    decision: attestation.decision,
-    issued_at: attestation.issued_at,
-    expires_at: attestation.expires_at,
-    nonce: attestation.nonce,
-  }, null, 0);
-
-  // Mock signature (in production, use Ed25519)
-  const signature = createHash('sha256')
-    .update(attestationString + evaluatorKeypair.publicKey.toBase58())
-    .digest('hex');
-
-  attestation.signature = signature;
+  const payload = canonicalizeAttestation(attestation);
+  const signatureBytes = nacl.sign.detached(Buffer.from(payload, 'utf8'), evaluatorKeypair.secretKey);
+  attestation.signature = Buffer.from(signatureBytes).toString('hex');
 
   return attestation;
+}
+
+export function verifyAttestationSignature(
+  attestation: Attestation,
+  expectedEvaluator: string
+): boolean {
+  if (!attestation.signature) return false;
+
+  try {
+    const publicKey = new PublicKey(expectedEvaluator);
+    const payload = canonicalizeAttestation(attestation);
+    const signatureBytes = Buffer.from(attestation.signature, 'hex');
+
+    return nacl.sign.detached.verify(
+      Buffer.from(payload, 'utf8'),
+      signatureBytes,
+      publicKey.toBuffer()
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function validateAttestation(
@@ -77,9 +104,13 @@ export function validateAttestation(
   if (!attestation.signature) {
     errors.push('Missing signature');
   }
+  if (attestation.signature && !verifyAttestationSignature(attestation, expectedEvaluator)) {
+    errors.push('Invalid signature');
+  }
 
   return {
     valid: errors.length === 0,
     errors,
   };
 }
+

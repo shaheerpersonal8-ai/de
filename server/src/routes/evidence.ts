@@ -1,109 +1,232 @@
 import { Router, Request, Response } from 'express';
 import { AppError } from '../middleware/errorHandler';
-import { computeEvidenceHash } from '../utils/hash';
-import { Evidence, EvidenceSubmission } from '../types';
+import { EvidenceStorageManager, EvidenceBundle } from '../services/evidence-storage.service';
+import { env } from '../config/env';
+import { AuditLogService } from '../models/audit-log.model';
 
 const router = Router();
 
-// In-memory storage (replace with database/IPFS in production)
-const evidenceStore = new Map<string, EvidenceSubmission>();
+const evidenceStore = new Map<string, EvidenceBundle>();
 
-// POST /api/evidence/submit — Submit evidence for a milestone
-router.post('/submit', (req: Request, res: Response) => {
+// POST /api/evidence/store — Store evidence with integrity verification
+router.post('/store', async (req: Request, res: Response) => {
   try {
-    const {
+    const { milestone_id, escrow_address, evidence_items, private_evidence_ids } = req.body;
+
+    if (!milestone_id || !escrow_address || !evidence_items || !Array.isArray(evidence_items)) {
+      throw new AppError(
+        400,
+        'Missing required fields: milestone_id, escrow_address, evidence_items (array)'
+      );
+    }
+
+    if (evidence_items.length === 0) {
+      throw new AppError(400, 'evidence_items cannot be empty');
+    }
+
+    const startTime = Date.now();
+
+    // Store evidence bundle with integrity verification
+    const bundle = await EvidenceStorageManager.storeEvidenceBundle(
       milestone_id,
       escrow_address,
-      freelancer_address,
       evidence_items,
-    } = req.body;
+      private_evidence_ids
+    );
 
-    if (!milestone_id || !escrow_address || !freelancer_address || !evidence_items) {
-      throw new AppError(400, 'Missing required fields');
-    }
+    // Store locally for retrieval
+    evidenceStore.set(bundle.id, bundle);
 
-    if (!Array.isArray(evidence_items) || evidence_items.length === 0) {
-      throw new AppError(400, 'Evidence items must be a non-empty array');
-    }
-
-    // Validate evidence items
-    const validTypes = ['url', 'repository', 'screenshot', 'file', 'text'];
-    for (const item of evidence_items) {
-      if (!item.id || !item.type || !item.content) {
-        throw new AppError(400, 'Each evidence item must have id, type, and content');
-      }
-      if (!validTypes.includes(item.type)) {
-        throw new AppError(400, `Invalid evidence type: ${item.type}`);
-      }
-    }
-
-    const submission: EvidenceSubmission = {
+    AuditLogService.log({
+      action: 'EVIDENCE_STORED_VIA_API',
       milestone_id,
       escrow_address,
-      freelancer_address,
-      evidence_items: evidence_items.map(e => ({
-        ...e,
-        submitted_at: e.submitted_at || Math.floor(Date.now() / 1000),
-        submitted_by: freelancer_address,
-      })),
-    };
-
-    // Compute evidence hash
-    const evidence_hash = computeEvidenceHash(submission.evidence_items);
-
-    evidenceStore.set(milestone_id, submission);
+      evaluator_pubkey: 'system',
+      status: 'SUCCESS',
+      details: {
+        bundle_id: bundle.id,
+        evidence_count: evidence_items.length,
+        merkle_root: bundle.merkle_root,
+        storage_methods: Object.keys(bundle.storage_proofs),
+      },
+      duration_ms: Date.now() - startTime,
+      model_version: env.evaluatorModelVersion,
+      evaluator_version: env.evaluatorVersion,
+    });
 
     res.status(201).json({
       success: true,
+      bundle: {
+        id: bundle.id,
+        milestone_id: bundle.milestone_id,
+        escrow_address: bundle.escrow_address,
+        merkle_root: bundle.merkle_root,
+        evidence_count: bundle.evidence_list.length,
+        private_evidence_count: bundle.evidence_list.filter(e => e.isPrivate).length,
+        storage_proofs: bundle.storage_proofs,
+        created_at: bundle.created_at,
+      },
+    });
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(500, 'Failed to store evidence', err);
+  }
+});
+
+// GET /api/evidence/:bundleId — Retrieve evidence bundle
+router.get('/:bundleId', (req: Request, res: Response) => {
+  try {
+    const { bundleId } = req.params;
+    const bundle = evidenceStore.get(bundleId);
+
+    if (!bundle) {
+      throw new AppError(404, `Evidence bundle not found: ${bundleId}`);
+    }
+
+    res.json({
+      success: true,
+      bundle: {
+        id: bundle.id,
+        milestone_id: bundle.milestone_id,
+        escrow_address: bundle.escrow_address,
+        evidence_count: bundle.evidence_list.length,
+        merkle_root: bundle.merkle_root,
+        storage_proofs: bundle.storage_proofs,
+        created_at: bundle.created_at,
+      },
+    });
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(500, 'Failed to retrieve evidence bundle', err);
+  }
+});
+
+// POST /api/evidence/verify — Verify evidence integrity
+router.post('/verify', (req: Request, res: Response) => {
+  try {
+    const { bundle_id, evidence_id } = req.body;
+
+    if (!bundle_id || !evidence_id) {
+      throw new AppError(400, 'Missing required fields: bundle_id, evidence_id');
+    }
+
+    const bundle = evidenceStore.get(bundle_id);
+    if (!bundle) {
+      throw new AppError(404, `Evidence bundle not found: ${bundle_id}`);
+    }
+
+    const isValid = EvidenceStorageManager.verifyEvidenceIntegrity(bundle, evidence_id);
+
+    AuditLogService.log({
+      action: 'EVIDENCE_INTEGRITY_VERIFIED',
+      milestone_id: bundle.milestone_id,
+      escrow_address: bundle.escrow_address,
+      evaluator_pubkey: 'system',
+      status: isValid ? 'SUCCESS' : 'ERROR',
+      details: {
+        bundle_id,
+        evidence_id,
+        valid: isValid,
+        merkle_root: bundle.merkle_root,
+      },
+      duration_ms: 0,
+      model_version: env.evaluatorModelVersion,
+      evaluator_version: env.evaluatorVersion,
+    });
+
+    res.json({
+      success: true,
+      valid: isValid,
+      merkle_root: bundle.merkle_root,
+    });
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    throw new AppError(500, 'Verification failed', err);
+  }
+});
+
+// POST /api/evidence/decrypt-private — Decrypt private evidence
+router.post('/decrypt-private', (req: Request, res: Response) => {
+  try {
+    if (!env.privateEvidenceEncryptionEnabled) {
+      throw new AppError(400, 'Private evidence decryption is disabled');
+    }
+
+    const { bundle_id, evidence_id, escrow_address, milestone_id } = req.body;
+
+    if (!bundle_id || !evidence_id || !escrow_address || !milestone_id) {
+      throw new AppError(
+        400,
+        'Missing required fields: bundle_id, evidence_id, escrow_address, milestone_id'
+      );
+    }
+
+    const bundle = evidenceStore.get(bundle_id);
+    if (!bundle) {
+      throw new AppError(404, `Evidence bundle not found: ${bundle_id}`);
+    }
+
+    const evidence = bundle.evidence_list.find(e => e.id === evidence_id);
+    if (!evidence) {
+      throw new AppError(404, `Evidence not found in bundle: ${evidence_id}`);
+    }
+
+    if (!evidence.isPrivate || !evidence.encrypted) {
+      throw new AppError(400, 'Evidence is not encrypted or is not marked as private');
+    }
+
+    const decrypted = EvidenceStorageManager.decryptPrivateEvidence(
+      evidence,
+      escrow_address,
+      milestone_id
+    );
+
+    AuditLogService.log({
+      action: 'PRIVATE_EVIDENCE_DECRYPTED',
       milestone_id,
-      evidence_hash,
-      evidence_count: evidence_items.length,
-      submitted_at: Math.floor(Date.now() / 1000),
+      escrow_address,
+      evaluator_pubkey: 'system',
+      status: 'SUCCESS',
+      details: {
+        bundle_id,
+        evidence_id,
+      },
+      duration_ms: 0,
+      model_version: env.evaluatorModelVersion,
+      evaluator_version: env.evaluatorVersion,
     });
-  } catch (err) {
-    if (err instanceof AppError) throw err;
-    throw new AppError(500, 'Failed to submit evidence', err);
-  }
-});
-
-// GET /api/evidence/:milestone_id — Retrieve evidence
-router.get('/:milestone_id', (req: Request, res: Response) => {
-  try {
-    const { milestone_id } = req.params;
-    const submission = evidenceStore.get(milestone_id);
-
-    if (!submission) {
-      throw new AppError(404, `Evidence not found for milestone ${milestone_id}`);
-    }
 
     res.json({
       success: true,
-      data: submission,
+      evidence: decrypted,
     });
   } catch (err) {
     if (err instanceof AppError) throw err;
-    throw new AppError(500, 'Failed to retrieve evidence', err);
+    throw new AppError(500, 'Decryption failed', err);
   }
 });
 
-// POST /api/evidence/hash — Compute evidence hash
-router.post('/hash', (req: Request, res: Response) => {
+// GET /api/evidence/storage-proof/:bundleId — Get storage proof
+router.get('/storage-proof/:bundleId', (req: Request, res: Response) => {
   try {
-    const { evidence_items } = req.body;
+    const { bundleId } = req.params;
+    const bundle = evidenceStore.get(bundleId);
 
-    if (!Array.isArray(evidence_items)) {
-      throw new AppError(400, 'Evidence items must be an array');
+    if (!bundle) {
+      throw new AppError(404, `Evidence bundle not found: ${bundleId}`);
     }
 
-    const evidence_hash = computeEvidenceHash(evidence_items);
+    const proof = EvidenceStorageManager.getStorageProof(bundle);
 
     res.json({
       success: true,
-      evidence_hash,
+      bundle_id: bundle.id,
+      storage_proof: proof,
+      storage_methods: Object.keys(bundle.storage_proofs),
     });
   } catch (err) {
     if (err instanceof AppError) throw err;
-    throw new AppError(500, 'Failed to compute hash', err);
+    throw new AppError(500, 'Failed to retrieve storage proof', err);
   }
 });
 

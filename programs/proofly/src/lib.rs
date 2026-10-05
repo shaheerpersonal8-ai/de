@@ -120,6 +120,7 @@ pub mod proofly {
         require!(ctx.accounts.escrow.status == EscrowStatus::Active as u8, EscrowError::EscrowNotActive);
         require!(ctx.accounts.milestone.status == MilestoneStatus::Pending as u8, EscrowError::MilestoneNotPending);
         require!(ctx.accounts.milestone.escrow == ctx.accounts.escrow.key(), EscrowError::InvalidMilestone);
+        require!(requirements_hash != [0; 32], EscrowError::InvalidRequirementsHash);
         ctx.accounts.escrow.requirements_hash = requirements_hash;
         ctx.accounts.milestone.requirements_hash = requirements_hash;
         Ok(())
@@ -136,6 +137,11 @@ pub mod proofly {
         require!(ctx.accounts.escrow.status == EscrowStatus::Active as u8, EscrowError::EscrowNotActive);
         require!(ctx.accounts.milestone.status == MilestoneStatus::Pending as u8, EscrowError::MilestoneNotPending);
         require!(ctx.accounts.milestone.escrow == ctx.accounts.escrow.key(), EscrowError::InvalidMilestone);
+        require!(requirements_hash != [0; 32], EscrowError::InvalidRequirementsHash);
+        require!(evidence_hash != [0; 32], EscrowError::InvalidEvidenceHash);
+        require!(decision == AttestationDecision::Pass as u8 || decision == AttestationDecision::Fail as u8 || decision == AttestationDecision::NeedsReview as u8, EscrowError::InvalidDecision);
+        require!(nonce > 0, EscrowError::InvalidNonce);
+        require!(ctx.accounts.milestone.attestation_nonce != nonce, EscrowError::AttestationReplay);
 
         let now = Clock::get()?.unix_timestamp;
         require!(expires_at > now, EscrowError::AttestationExpired);
@@ -224,12 +230,17 @@ pub mod proofly {
         require!(ctx.accounts.milestone.status == MilestoneStatus::Pending as u8, EscrowError::MilestoneNotPending);
         require!(ctx.accounts.attestation.escrow == escrow_key, EscrowError::AttestationMismatch);
         require!(ctx.accounts.attestation.milestone == ctx.accounts.milestone.key(), EscrowError::AttestationMismatch);
-        require!(ctx.accounts.attestation.evaluator == ctx.accounts.evaluator.key(), EscrowError::InvalidEvaluator);
+        require!(ctx.accounts.escrow.evaluator == ctx.accounts.evaluator.key(), EscrowError::InvalidEvaluator);
+        require!(ctx.accounts.attestation.evaluator == ctx.accounts.escrow.evaluator, EscrowError::InvalidEvaluator);
         require!(ctx.accounts.attestation.requirements_hash == ctx.accounts.escrow.requirements_hash, EscrowError::AttestationMismatch);
         require!(ctx.accounts.attestation.requirements_hash == ctx.accounts.milestone.requirements_hash, EscrowError::AttestationMismatch);
+        require!(ctx.accounts.attestation.evidence_hash == ctx.accounts.milestone.evidence_hash, EscrowError::AttestationMismatch);
+        require!(ctx.accounts.attestation.nonce > 0, EscrowError::InvalidNonce);
+        require!(ctx.accounts.attestation.nonce == ctx.accounts.milestone.attestation_nonce, EscrowError::AttestationReplay);
         require!(ctx.accounts.attestation.decision == AttestationDecision::Pass as u8, EscrowError::AttestationNotApproved);
 
         let now = Clock::get()?.unix_timestamp;
+        require!(ctx.accounts.attestation.issued_at <= now, EscrowError::AttestationExpired);
         require!(now <= ctx.accounts.attestation.expires_at, EscrowError::AttestationExpired);
 
         let new_released = ctx.accounts.escrow.released_amount.checked_add(amount).ok_or(EscrowError::Overflow)?;
@@ -512,8 +523,14 @@ pub enum EscrowError {
     #[msg("Vault has insufficient lamports")] InsufficientVaultBalance,
     #[msg("Arithmetic overflow")] Overflow,
     #[msg("Milestone does not belong to the escrow")] InvalidMilestone,
+    #[msg("Requirements hash must be set")] InvalidRequirementsHash,
+    #[msg("Evidence hash must be set")] InvalidEvidenceHash,
+    #[msg("Decision code is not valid")] InvalidDecision,
+    #[msg("Nonce must be positive and unique")] InvalidNonce,
+    #[msg("Attestation nonce was already used for this milestone")] AttestationReplay,
     #[msg("Attestation has expired")] AttestationExpired,
     #[msg("Attestation signer is not authorized")] InvalidEvaluator,
     #[msg("Attestation does not match escrow or milestone data")] AttestationMismatch,
     #[msg("Attestation was not approved for release")] AttestationNotApproved,
 }
+
