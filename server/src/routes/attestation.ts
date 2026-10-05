@@ -5,10 +5,8 @@ import { Keypair } from '@solana/web3.js';
 
 const router = Router();
 
-// In-memory storage (replace with database in production)
 const attestationStore = new Map<string, any>();
 
-// Load evaluator keypair from environment (in production, use secure key management)
 let evaluatorKeypair: Keypair | null = null;
 if (process.env.PROOFLY_EVALUATOR_KEYPAIR) {
   try {
@@ -19,7 +17,6 @@ if (process.env.PROOFLY_EVALUATOR_KEYPAIR) {
   }
 }
 
-// POST /api/attestation/sign — Create and sign attestation
 router.post('/sign', (req: Request, res: Response) => {
   try {
     if (!evaluatorKeypair) {
@@ -37,19 +34,32 @@ router.post('/sign', (req: Request, res: Response) => {
       throw new AppError(400, 'Missing required fields');
     }
 
-    // Only sign PASS attestations
+    if (!evaluation_result.requirements_hash || !evaluation_result.evidence_hash) {
+      throw new AppError(400, 'Evaluation result is missing requirements_hash or evidence_hash');
+    }
+
     if (evaluation_result.decision !== 'PASS') {
       throw new AppError(400, `Cannot sign non-PASS decisions (got ${evaluation_result.decision})`);
     }
 
-    // Create attestation
     const attestation = createAttestation(
       evaluation_result,
       escrow_address,
       milestone_address,
       evaluatorKeypair,
-      nonce
+      Number(nonce)
     );
+
+    const verification = validateAttestation(
+      attestation,
+      evaluation_result.requirements_hash,
+      evaluation_result.evidence_hash,
+      evaluatorKeypair.publicKey.toBase58()
+    );
+
+    if (!verification.valid) {
+      throw new AppError(400, `Attestation validation failed: ${verification.errors.join(', ')}`);
+    }
 
     attestationStore.set(`${escrow_address}-${milestone_address}`, attestation);
 
@@ -63,7 +73,6 @@ router.post('/sign', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/attestation/validate — Validate an attestation
 router.post('/validate', (req: Request, res: Response) => {
   try {
     const {
@@ -100,7 +109,6 @@ router.post('/validate', (req: Request, res: Response) => {
   }
 });
 
-// GET /api/attestation/:escrow/:milestone — Retrieve attestation
 router.get('/:escrow/:milestone', (req: Request, res: Response) => {
   try {
     const { escrow, milestone } = req.params;
@@ -122,3 +130,4 @@ router.get('/:escrow/:milestone', (req: Request, res: Response) => {
 });
 
 export default router;
+
