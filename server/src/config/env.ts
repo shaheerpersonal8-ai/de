@@ -1,6 +1,5 @@
 import dotenv from 'dotenv';
 import * as path from 'path';
-import * as fs from 'fs';
 
 // Load environment variables
 dotenv.config();
@@ -60,6 +59,23 @@ interface EnvConfig {
   enableAuditLogs: boolean;
   enableSignatureVerification: boolean;
   enableDeterministicChecks: boolean;
+
+  // IPFS Configuration
+  ipfsGatewayUrl: string;
+  ipfsApiUrl: string;
+  ipfsUploadEnabled: boolean;
+  ipfsTimeout: number;
+
+  // Arweave Configuration
+  arweaveNodeUrl: string;
+  arweaveUploadEnabled: boolean;
+  arweaveTimeout: number;
+
+  // Evidence Storage
+  evidenceStorageMode: 'ipfs' | 'arweave' | 'hybrid';
+  privateEvidenceEncryptionEnabled: boolean;
+  evidenceEncryptionKeyPath: string;
+  evidenceMerklePersistenceEnabled: boolean;
 }
 
 function getStringEnv(key: string, defaultValue?: string): string {
@@ -98,27 +114,6 @@ function getOptionalStringEnv(key: string): string | null {
   return process.env[key] || null;
 }
 
-/**
- * Parse evaluator keypair from JSON string
- */
-function parseEvaluatorKeypair(): string | null {
-  const keypairJson = getOptionalStringEnv('PROOFLY_EVALUATOR_KEYPAIR');
-  if (keypairJson) {
-    try {
-      const keyArray = JSON.parse(keypairJson);
-      if (Array.isArray(keyArray) && keyArray.length === 64) {
-        return keypairJson;
-      }
-    } catch (err) {
-      console.warn('Invalid PROOFLY_EVALUATOR_KEYPAIR format, will fall back to file');
-    }
-  }
-  return null;
-}
-
-/**
- * Load and parse environment configuration
- */
 export function loadEnvConfig(): EnvConfig {
   return {
     // Server
@@ -175,17 +170,43 @@ export function loadEnvConfig(): EnvConfig {
     enableAuditLogs: getBooleanEnv('ENABLE_AUDIT_LOGS', true),
     enableSignatureVerification: getBooleanEnv('ENABLE_SIGNATURE_VERIFICATION', true),
     enableDeterministicChecks: getBooleanEnv('ENABLE_DETERMINISTIC_CHECKS', true),
+
+    // IPFS Configuration
+    ipfsGatewayUrl: getStringEnv('IPFS_GATEWAY_URL', 'https://gateway.pinata.cloud'),
+    ipfsApiUrl: getStringEnv('IPFS_API_URL', 'http://localhost:5001'),
+    ipfsUploadEnabled: getBooleanEnv('IPFS_UPLOAD_ENABLED', true),
+    ipfsTimeout: getNumberEnv('IPFS_TIMEOUT_MS', 30000),
+
+    // Arweave Configuration
+    arweaveNodeUrl: getStringEnv('ARWEAVE_NODE_URL', 'https://arweave.net'),
+    arweaveUploadEnabled: getBooleanEnv('ARWEAVE_UPLOAD_ENABLED', true),
+    arweaveTimeout: getNumberEnv('ARWEAVE_TIMEOUT_MS', 60000),
+
+    // Evidence Storage
+    evidenceStorageMode: (getStringEnv('EVIDENCE_STORAGE_MODE', 'hybrid') as 'ipfs' | 'arweave' | 'hybrid'),
+    privateEvidenceEncryptionEnabled: getBooleanEnv('PRIVATE_EVIDENCE_ENCRYPTION_ENABLED', true),
+    evidenceEncryptionKeyPath: getStringEnv('EVIDENCE_ENCRYPTION_KEY_PATH', path.join(process.env.HOME || '', '.proofly/encryption-key')),
+    evidenceMerklePersistenceEnabled: getBooleanEnv('EVIDENCE_MERKLE_PERSISTENCE_ENABLED', true),
   };
 }
 
-/**
- * Singleton instance of environment config
- */
+function parseEvaluatorKeypair(): string | null {
+  const keypairJson = getOptionalStringEnv('PROOFLY_EVALUATOR_KEYPAIR');
+  if (keypairJson) {
+    try {
+      const keyArray = JSON.parse(keypairJson);
+      if (Array.isArray(keyArray) && keyArray.length === 64) {
+        return keypairJson;
+      }
+    } catch (err) {
+      console.warn('Invalid PROOFLY_EVALUATOR_KEYPAIR format, will fall back to file');
+    }
+  }
+  return null;
+}
+
 let envConfig: EnvConfig | null = null;
 
-/**
- * Get the environment config (lazy load)
- */
 export function getEnvConfig(): EnvConfig {
   if (!envConfig) {
     envConfig = loadEnvConfig();
@@ -193,9 +214,6 @@ export function getEnvConfig(): EnvConfig {
   return envConfig;
 }
 
-/**
- * Validate required production variables
- */
 export function validateProductionEnv(): void {
   const env = getEnvConfig();
 
@@ -221,7 +239,4 @@ export function validateProductionEnv(): void {
   }
 }
 
-/**
- * Export default config instance
- */
 export const env = getEnvConfig();
