@@ -1,45 +1,59 @@
-import { getEnvConfig } from '../config/env';
-import { getEvaluatorKeypair } from '../config/evaluator';
 import { Keypair } from '@solana/web3.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { env } from './env';
 
-const config = getEnvConfig();
+let evaluatorKeypair: Keypair | null = null;
 
 export function initializeEvaluatorKeypair(): Keypair {
-  // Try from env config first
-  if (config.evaluatorKeypair) {
+  if (evaluatorKeypair) return evaluatorKeypair;
+
+  // Try to load from environment variable first
+  if (env.evaluatorKeypair) {
     try {
-      const keyArray = JSON.parse(config.evaluatorKeypair);
-      return Keypair.fromSecretKey(new Uint8Array(keyArray));
+      const keyArray = JSON.parse(env.evaluatorKeypair);
+      evaluatorKeypair = Keypair.fromSecretKey(new Uint8Array(keyArray));
+      console.log('✓ Evaluator keypair loaded from PROOFLY_EVALUATOR_KEYPAIR environment variable');
+      return evaluatorKeypair;
     } catch (err) {
-      console.error('Failed to parse evaluator keypair from env config:', err);
+      console.error('Failed to parse PROOFLY_EVALUATOR_KEYPAIR:', err);
     }
   }
 
-  // Try from file path
-  const fs = require('fs');
-  if (fs.existsSync(config.evaluatorKeypairPath)) {
+  // Try to load from file path
+  if (fs.existsSync(env.evaluatorKeypairPath)) {
     try {
-      const keyArray = JSON.parse(fs.readFileSync(config.evaluatorKeypairPath, 'utf8'));
-      console.log('✓ Evaluator keypair loaded from file:', config.evaluatorKeypairPath);
-      return Keypair.fromSecretKey(new Uint8Array(keyArray));
+      const keyArray = JSON.parse(fs.readFileSync(env.evaluatorKeypairPath, 'utf8'));
+      evaluatorKeypair = Keypair.fromSecretKey(new Uint8Array(keyArray));
+      console.log('✓ Evaluator keypair loaded from file:', env.evaluatorKeypairPath);
+      return evaluatorKeypair;
     } catch (err) {
-      console.error('Failed to load keypair from file:', err);
+      console.error('Failed to load keypair from file:', env.evaluatorKeypairPath, err);
     }
   }
 
-  // Generate new keypair for development
-  const keypair = Keypair.generate();
-  console.warn('⚠ Generated new evaluator keypair for development');
-  console.warn('Public key:', keypair.publicKey.toBase58());
-  return keypair;
+  // Generate a new keypair for development
+  evaluatorKeypair = Keypair.generate();
+  console.warn('⚠️  Generated new evaluator keypair for development');
+  console.warn('   Public key:', evaluatorKeypair.publicKey.toBase58());
+  console.warn('   Set PROOFLY_EVALUATOR_KEYPAIR environment variable to:', JSON.stringify(Array.from(evaluatorKeypair.secretKey)));
+
+  return evaluatorKeypair;
+}
+
+export function getEvaluatorKeypair(): Keypair {
+  if (!evaluatorKeypair) {
+    throw new Error('Evaluator keypair not initialized. Call initializeEvaluatorKeypair first.');
+  }
+  return evaluatorKeypair;
 }
 
 export function getEvaluatorConfig() {
   return {
-    MODEL_VERSION: config.evaluatorModelVersion,
-    EVALUATOR_VERSION: config.evaluatorVersion,
-    AI_TIMEOUT_MS: config.aiEvaluationTimeoutMs,
-    MAX_RETRIES: config.aiMaxRetries,
-    RETRY_DELAY_MS: config.aiRetryDelayMs,
+    MODEL_VERSION: env.evaluatorModelVersion,
+    EVALUATOR_VERSION: env.evaluatorVersion,
+    AI_TIMEOUT_MS: env.aiEvaluationTimeoutMs,
+    MAX_RETRIES: env.aiMaxRetries,
+    RETRY_DELAY_MS: env.aiRetryDelayMs,
   };
 }

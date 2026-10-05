@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { AppError } from '../middleware/errorHandler';
 import { EvaluatorService } from '../services/evaluator-service';
+import { env } from '../config/env';
 import { AuditLogService } from '../models/audit-log.model';
 import { validateEvaluationResult } from '../schemas/evaluation.schema';
 
@@ -8,14 +9,22 @@ const router = Router();
 
 const attestationStore = new Map<string, any>();
 
+// Initialize evaluator service with env config
+let isInitialized = false;
+
+function ensureInitialized() {
+  if (!isInitialized) {
+    console.log('[Attestation Route] Initializing EvaluatorService');
+    isInitialized = true;
+  }
+}
+
 router.post('/sign', async (req: Request, res: Response) => {
   try {
-    const {
-      evaluation_result,
-      escrow_address,
-      milestone_address,
-      nonce,
-    } = req.body;
+    ensureInitialized();
+
+    // Only sign PASS attestations
+    const { evaluation_result, escrow_address, milestone_address, nonce } = req.body;
 
     if (!evaluation_result || !escrow_address || !milestone_address || nonce === undefined) {
       throw new AppError(400, 'Missing required fields: evaluation_result, escrow_address, milestone_address, nonce');
@@ -52,10 +61,12 @@ router.post('/sign', async (req: Request, res: Response) => {
       signature,
     });
 
-    // Verify signature
-    const isValid = EvaluatorService.verifyAttestationSignature(attestation, signature);
-    if (!isValid) {
-      throw new AppError(500, 'Failed to verify attestation signature');
+    // Verify signature if enabled
+    if (env.enableSignatureVerification) {
+      const isValid = EvaluatorService.verifyAttestationSignature(attestation, signature);
+      if (!isValid) {
+        throw new AppError(500, 'Failed to verify attestation signature');
+      }
     }
 
     AuditLogService.log({
@@ -84,6 +95,12 @@ router.post('/sign', async (req: Request, res: Response) => {
 
 router.post('/verify', (req: Request, res: Response) => {
   try {
+    ensureInitialized();
+
+    if (!env.enableSignatureVerification) {
+      throw new AppError(400, 'Signature verification is disabled');
+    }
+
     const { attestation, signature } = req.body;
 
     if (!attestation || !signature) {

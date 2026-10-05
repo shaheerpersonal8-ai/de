@@ -1,12 +1,13 @@
 import { Keypair } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import { EvaluationResult } from '../types';
-import { getEvaluatorKeypair, getEvaluatorConfig } from '../config/evaluator';
+import { getEvaluatorKeypair } from '../config/evaluator-env';
+import { env } from '../config/env';
 import { AuditLogService } from '../models/audit-log.model';
 import { AttestationPayload, AttestationPayloadSchema, validateEvaluationResult } from '../schemas/evaluation.schema';
 
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 1000;
+const MAX_RETRIES = env.aiMaxRetries;
+const RETRY_DELAY_MS = env.aiRetryDelayMs;
 
 export class EvaluatorService {
   private static keypair: Keypair | null = null;
@@ -45,9 +46,8 @@ export class EvaluatorService {
       if (validated.decision === 'PASS') decisionCode = 1;
       else if (validated.decision === 'FAIL') decisionCode = 2;
 
-      const config = getEvaluatorConfig();
       const now = Math.floor(Date.now() / 1000);
-      const expiresAt = now + 24 * 3600; // 24 hours
+      const expiresAt = now + env.attestationExpiryHours * 3600;
 
       // Create attestation payload
       const attestation: AttestationPayload = {
@@ -60,8 +60,8 @@ export class EvaluatorService {
         issued_at: now,
         expires_at: expiresAt,
         nonce,
-        model_version: config.MODEL_VERSION,
-        evaluator_version: config.EVALUATOR_VERSION,
+        model_version: env.evaluatorModelVersion,
+        evaluator_version: env.evaluatorVersion,
       };
 
       // Validate attestation payload schema
@@ -73,36 +73,39 @@ export class EvaluatorService {
       auditDetails.signature_created = true;
 
       // Log successful attestation creation
-      AuditLogService.log({
-        action: 'ATTESTATION_CREATED',
-        milestone_id: milestoneAddress,
-        escrow_address: escrowAddress,
-        evaluator_pubkey: this.getPublicKeyBase58(),
-        status: 'SUCCESS',
-        details: auditDetails,
-        duration_ms: Date.now() - startTime,
-        model_version: config.MODEL_VERSION,
-        evaluator_version: config.EVALUATOR_VERSION,
-      });
+      if (env.enableAuditLogs) {
+        AuditLogService.log({
+          action: 'ATTESTATION_CREATED',
+          milestone_id: milestoneAddress,
+          escrow_address: escrowAddress,
+          evaluator_pubkey: this.getPublicKeyBase58(),
+          status: 'SUCCESS',
+          details: auditDetails,
+          duration_ms: Date.now() - startTime,
+          model_version: env.evaluatorModelVersion,
+          evaluator_version: env.evaluatorVersion,
+        });
+      }
 
       return {
         attestation: validatedAttestation,
         signature,
       };
     } catch (error: any) {
-      const config = getEvaluatorConfig();
-      AuditLogService.log({
-        action: 'ATTESTATION_FAILED',
-        milestone_id: milestoneAddress,
-        escrow_address: escrowAddress,
-        evaluator_pubkey: this.getPublicKeyBase58(),
-        status: 'ERROR',
-        details: auditDetails,
-        error_message: error.message,
-        duration_ms: Date.now() - startTime,
-        model_version: config.MODEL_VERSION,
-        evaluator_version: config.EVALUATOR_VERSION,
-      });
+      if (env.enableAuditLogs) {
+        AuditLogService.log({
+          action: 'ATTESTATION_FAILED',
+          milestone_id: milestoneAddress,
+          escrow_address: escrowAddress,
+          evaluator_pubkey: this.getPublicKeyBase58(),
+          status: 'ERROR',
+          details: auditDetails,
+          error_message: error.message,
+          duration_ms: Date.now() - startTime,
+          model_version: env.evaluatorModelVersion,
+          evaluator_version: env.evaluatorVersion,
+        });
+      }
       throw error;
     }
   }
@@ -130,7 +133,7 @@ export class EvaluatorService {
 
       const verified = nacl.sign.detached.verify(messageBytes, signatureBytes, publicKeyBuffer);
 
-      if (verified) {
+      if (verified && env.enableAuditLogs) {
         AuditLogService.log({
           action: 'SIGNATURE_VERIFIED',
           milestone_id: payload.milestone,
@@ -146,19 +149,20 @@ export class EvaluatorService {
 
       return verified;
     } catch (error) {
-      const config = getEvaluatorConfig();
-      AuditLogService.log({
-        action: 'SIGNATURE_VERIFIED',
-        milestone_id: payload.milestone,
-        escrow_address: payload.escrow,
-        evaluator_pubkey: payload.evaluator,
-        status: 'ERROR',
-        details: { verification_result: 'invalid' },
-        error_message: 'Signature verification failed',
-        duration_ms: 0,
-        model_version: config.MODEL_VERSION,
-        evaluator_version: config.EVALUATOR_VERSION,
-      });
+      if (env.enableAuditLogs) {
+        AuditLogService.log({
+          action: 'SIGNATURE_VERIFIED',
+          milestone_id: payload.milestone,
+          escrow_address: payload.escrow,
+          evaluator_pubkey: payload.evaluator,
+          status: 'ERROR',
+          details: { verification_result: 'invalid' },
+          error_message: 'Signature verification failed',
+          duration_ms: 0,
+          model_version: env.evaluatorModelVersion,
+          evaluator_version: env.evaluatorVersion,
+        });
+      }
       return false;
     }
   }

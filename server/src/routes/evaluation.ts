@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { AppError } from '../middleware/errorHandler';
 import { AIEvaluationWithRetry } from '../services/ai-evaluation-with-retry';
 import { EvaluatorService } from '../services/evaluator-service';
+import { env } from '../config/env';
 import { AuditLogService } from '../models/audit-log.model';
 
 const router = Router();
@@ -36,15 +37,29 @@ router.post('/run', async (req: Request, res: Response) => {
 
     const startTime = Date.now();
 
-    // Run evaluation with timeout and retry logic
-    const evaluation = await AIEvaluationWithRetry.evaluateWithTimeout(
-      milestone_id,
-      requirements_hash,
-      evidence_items,
-      requirements,
-      release_policy,
-      escrow_address
-    );
+    let evaluation;
+
+    // Use mock evaluation if enabled, otherwise use AI with retry
+    if (env.useMockAiEvaluation) {
+      console.log(`[Evaluation] Using MOCK AI evaluation (USE_MOCK_AI_EVALUATION=${env.useMockAiEvaluation})`);
+      evaluation = await createMockEvaluation(
+        milestone_id,
+        requirements_hash,
+        evidence_items,
+        requirements,
+        release_policy
+      );
+    } else {
+      console.log(`[Evaluation] Using REAL AI evaluation with timeout ${env.aiEvaluationTimeoutMs}ms and ${env.aiMaxRetries} retries`);
+      evaluation = await AIEvaluationWithRetry.evaluateWithTimeout(
+        milestone_id,
+        requirements_hash,
+        evidence_items,
+        requirements,
+        release_policy,
+        escrow_address
+      );
+    }
 
     // Store evaluation
     evaluationStore.set(milestone_id, evaluation);
@@ -124,5 +139,43 @@ router.get('/audit/recent/:limit', (req: Request, res: Response) => {
     throw new AppError(500, 'Failed to retrieve recent audit logs', err);
   }
 });
+
+/**
+ * Mock evaluation for development/testing
+ */
+async function createMockEvaluation(
+  milestoneId: string,
+  requirementsHash: string,
+  evidenceItems: any[],
+  requirements: any[],
+  releasePolicy: any
+) {
+  const crypto = await import('crypto');
+  
+  const evidenceHash = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(evidenceItems.sort((a, b) => a.id.localeCompare(b.id))))
+    .digest('hex');
+
+  return {
+    milestone_id: milestoneId,
+    requirements_hash: requirementsHash,
+    decision: 'PASS',
+    confidence: 0.95,
+    requirements: requirements.map((r: any) => ({
+      id: r.id,
+      decision: 'PASS',
+      confidence: 0.95,
+      evidence_ids: evidenceItems.map((e: any) => e.id),
+      reason: `Mock evaluation: ${r.description}`,
+      details: { type: r.type },
+    })),
+    uncertainties: [],
+    model_version: env.evaluatorModelVersion,
+    evaluator_version: env.evaluatorVersion,
+    evaluated_at: Math.floor(Date.now() / 1000),
+    evidence_hash: evidenceHash,
+  };
+}
 
 export default router;
